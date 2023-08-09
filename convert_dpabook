@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+
+# Correlation Power Analysis implementation
+# 2018-2022 Michael Weiner, m.weiner@tum.de
+
+import argparse
+import scipy.io
+import numpy
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="converts dpabook (matlab) traces to numpy (chipwhisperer)"
+    )
+    parser.add_argument("in_matfile")
+    parser.add_argument("-x", "--out_textin", required=False)
+    parser.add_argument("-r", "--out_traces", required=False)
+    args = parser.parse_args()
+
+    if args.out_textin is None:
+        prefix = args.in_matfile.split(".mat")[0]
+        args.out_textin = "".join((prefix, "_textin"))
+
+    if args.out_traces is None:
+        prefix = args.in_matfile.split(".mat")[0]
+        args.out_traces = "".join((prefix, "_traces"))
+
+    mat = scipy.io.loadmat(args.in_matfile)
+    inputs = mat["inputs"]
+    traces = mat["traces"]
+    numpy.save(args.out_textin, inputs)
+    numpy.save(args.out_traces, traces)
+
+
+if __name__ == "__main__":
+    main()

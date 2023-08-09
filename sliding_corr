@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+import numpy as np
+import argparse
+import os.path
+import time
+from musica import corr2_big, load_single_trace
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="slides a reference pattern over one or more traces"
+    )
+    parser.add_argument("-s", "--reftrace-segment", nargs=2, type=int,
+                        help="start and end sample to use"
+                             "in the reference trace (default: all)")
+    parser.add_argument("-n", "--varname",
+                        help="variable name of trace (only for matlab file)",
+                        default="trace")
+    parser.add_argument("reftrace", help="path to reference trace")
+    parser.add_argument("trace", nargs="+", help="input trace files")
+    args = parser.parse_args()
+    reftrace = load_single_trace(args.reftrace, args.varname)
+    if args.reftrace_segment:
+        start, stop = args.reftrace_segment
+        reftrace = reftrace[start:stop]
+    for tracename in args.trace:
+        tracedata = load_single_trace(tracename, args.varname)
+        start = time.time()
+        corr = corr2_big(tracedata, reftrace)
+        stop = time.time()
+        print(f"{tracename=} time={stop-start:.2f} s")
+        without_suffix, _ = os.path.splitext(tracename)
+        np.save(f"{without_suffix}_corr.npy", corr)
+
+
+if __name__ == "__main__":
+    main()

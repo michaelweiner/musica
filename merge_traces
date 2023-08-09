@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+
+import numpy as np
+import argparse
+import re
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="converts single npy trace files into one matrix")
+    parser.add_argument(
+        "-o", "--output",
+        help="output npy file containing the accumulated matrix",
+        required=True
+    )
+    parser.add_argument(
+        "infile",
+        help="input npy file containing a single trace as a vector",
+        nargs="+"
+    )
+    args = parser.parse_args()
+
+    tracenums = list()
+    for infile in args.infile:
+        tracenums.append(int(re.search(r"(\d{5})", infile).group(1)))
+    assert len(tracenums) == max(tracenums)+1
+    num_traces = len(tracenums)
+    out_matrix = None
+    for infile in args.infile:
+        pos = int(re.search(r"(\d{5})", infile).group(1))
+        trace = np.load(infile)
+        tracelen = trace.shape[-1]
+        if out_matrix is None:
+            out_matrix = np.zeros((num_traces, tracelen), dtype=trace.dtype)
+        out_matrix[pos, :] = trace
+    np.save(args.output, out_matrix)
+
+
+if __name__ == "__main__":
+    main()

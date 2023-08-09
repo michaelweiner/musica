@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+
+import time
+import numpy as np
+import subprocess
+import os.path
+import scipy.io
+import argparse
+from pyvicp import Client
+
+
+def raw_to_array(raw):
+    start = raw.find(b"#")
+    lenlen = int(raw[start+1:start+2])
+    datalen = int(raw[start+2:start+lenlen+2])
+    trace = raw[start+lenlen+2:start+lenlen+datalen+2]
+    trace = np.frombuffer(trace, dtype=">i2")
+    # uncomment for old Lecroy Waverunner scope
+    # because of weird encoding
+    # but beware data acquisition is somewhat buggy there anyway
+    # trace = np.array(trace, dtype=np.int8)
+    return trace
+
+
+def savetrace(last, destdir):
+    # this function allows "interleaved" saving of the old trace
+    # while the scope is "Processing...", which is especially useful
+    # for very large traces.
+    if last:
+        prefix = os.path.join(destdir, last["prefix"])
+        fullpath = f"{prefix}.mat"
+        basename = os.path.basename(fullpath)
+        starttime = time.time()
+        scipy.io.savemat(fullpath, last)
+        stoptime = time.time()
+        delta = stoptime - starttime
+        print(f"saved '{basename}' in {delta:.2f} s")
+
+
+def request_response(scope, request):
+    if type(request) == str:
+        request = request.encode()
+    scope.send(request)
+    return scope.receive()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Acquires traces from Lecroy scope"
+                    "and talks to DUT over UART")
+    parser.add_argument("-n", "--numtraces", type=int, default=1,
+                        help="number of traces to capture")
+    parser.add_argument("-i", "--ip", default="169.254.255.244",
+                        help="IP address of scope")
+    parser.add_argument("-d", "--destdir", default=".",
+                        help="destination directory for traces")
+    parser.add_argument("-o", "--nocapture", action="store_true",
+                        help="do not capture traces")
+    parser.add_argument("dutcomm",
+                        help="command line tool that talks to the DUT."
+                        " Tool will be called witout arguments"
+                        " and must print nothing but a one-line hex string"
+                        " to stdout that will be stored in the trace file"
+                        " for further processing (e.g. plaintext/ciphertext)")
+    args = parser.parse_args()
+
+    # for some reason, the constructor does not initialize the timeout properly
+    timeout = 60.0
+    scope = Client(args.ip, timeout=timeout)
+    scope.timeout = timeout
+
+    print(request_response(scope, "*IDN?"))
+
+    last = None
+
+    for tracenum in range(args.numtraces):
+        scope.send(b"TRMD SINGLE;WAIT")
+        time.sleep(0.05)
+        response = subprocess.check_output([args.dutcomm])
+        response = bytes.fromhex(response.decode().split()[0])
+        print(f"{tracenum=} data={response.hex()}")
+        if args.nocapture:
+            break
+        savetrace(last, args.destdir)
+        starttime = time.time()
+        try:
+            trace = request_response(scope, "C1:WF? DAT1")
+        except TimeoutError:
+            print("fixme: timeout")
+            raise
+        stoptime = time.time()
+        delta = stoptime - starttime
+        xferlen = len(trace)
+        print(f"transferred {xferlen} bytes in {delta} s"
+              f" @ {(xferlen/(1024*1024*delta)):.1f} MiB/s")
+        trace = raw_to_array(trace)
+        last = {"prefix": f"trace_{tracenum:05d}", "trace": trace,
+                "data": np.array([i for i in response], dtype=np.uint8)}
+    savetrace(last, args.destdir)
+
+
+if __name__ == "__main__":
+    main()
