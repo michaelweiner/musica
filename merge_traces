@@ -1,39 +1,63 @@
 #!/usr/bin/env python3
 
 import numpy as np
+import scipy.io
 import argparse
-import re
+
+
+def load_trace(filename, tracevar="trace", datavar="data"):
+    """Loads trace and data from matlab file."""
+    mat = scipy.io.loadmat(filename)
+    return mat[datavar].flatten(), mat[tracevar].flatten()
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="converts single npy trace files into one matrix")
     parser.add_argument(
-        "-o", "--output",
-        help="output npy file containing the accumulated matrix",
+        "-r", "--range",
+        help="range of sample points to include (default: all)"
+        " in Python slice notation",
+        type=lambda x: slice(*(int(i) for i in x.split(":"))),
+        default=slice(None)),
+    parser.add_argument(
+        "-o", "--output-prefix",
+        help="output prefix for npy files",
         required=True
     )
     parser.add_argument(
+        "-d", "--data-suffix",
+        help="suffix for data from matlab input (e.g. 'textin' or 'textout')",
+        default="textin")
+    parser.add_argument(
         "infile",
-        help="input npy file containing a single trace as a vector",
+        help="input matlab files containing single traces",
         nargs="+"
     )
     args = parser.parse_args()
 
-    tracenums = list()
-    for infile in args.infile:
-        tracenums.append(int(re.search(r"(\d{5})", infile).group(1)))
-    assert len(tracenums) == max(tracenums)+1
-    num_traces = len(tracenums)
-    out_matrix = None
-    for infile in args.infile:
-        pos = int(re.search(r"(\d{5})", infile).group(1))
-        trace = np.load(infile)
-        tracelen = trace.shape[-1]
-        if out_matrix is None:
-            out_matrix = np.zeros((num_traces, tracelen), dtype=trace.dtype)
-        out_matrix[pos, :] = trace
-    np.save(args.output, out_matrix)
+    data, trace = load_trace(args.infile[0])
+    num_traces = len(args.infile)
+    len_data = len(data)
+    len_trace = len(trace)
+    trace = trace[args.range]
+    len_outtrace = len(trace)
+
+    print(f"Input number of traces:             {num_traces}")
+    print(f"Input number of samples per trace:  {len_trace}")
+    print(f"Output number of samples per trace: {len_outtrace}")
+    print(f"Data length: {len_data}")
+    all_data = np.zeros((num_traces, len_data), dtype=np.uint8)
+    all_traces = np.zeros((num_traces, len_outtrace), dtype=trace.dtype)
+    all_data[0, :] = data
+    all_traces[0, :] = trace
+
+    for num, infile in enumerate(args.infile[1:], start=1):
+        data, trace = load_trace(infile)
+        all_data[num, :] = data
+        all_traces[num, :] = trace[args.range]
+    np.save(f"{args.output_prefix}_{args.data_suffix}", all_data)
+    np.save(f"{args.output_prefix}_traces", all_traces)
 
 
 if __name__ == "__main__":
