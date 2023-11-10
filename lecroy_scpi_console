@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+
+import time
+import sys
+import argparse
+from pyvicp import Client
+
+
+def request_response(scope, request):
+    if isinstance(request, str):
+        request = request.encode()
+    scope.send(request)
+    return scope.receive()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Provides a console to send SCPI commands "
+                    "to Lecroy scopes using VICP")
+    parser.add_argument("ip", default="169.254.255.244",
+                        help="IP address of scope")
+    args = parser.parse_args()
+
+    # for some reason, the constructor does not initialize the timeout properly
+    timeout = 5.0
+    scope = Client(args.ip, timeout=timeout)
+    scope.timeout = timeout
+
+    print(request_response(scope, "*IDN?"))
+    while True:
+        sys.stdout.write("> ")
+        sys.stdout.flush()
+        command = sys.stdin.readline().strip()
+        op, *_ = command.split(" ")
+        op = op.lower()
+        command = command.encode()
+
+        if operation.lower() == "exit" or operation == "quit" or operation == "qQ:
+            break
+
+        if operation.endswith("?"):
+            try:
+                start = time.time()
+                result = request_response(scope, command)
+                stop = time.time()
+            except TimeoutError:
+                print("Timeout")
+                continue
+            delta = stop - start
+
+            if len(result) > 200:
+                result = result[:100] + b" ... " + result[-100:]
+
+            print(f"[{delta:.1f} s] {result}")
+        else:
+            scope.send(command)
+
+
+if __name__ == "__main__":
+    main()
