@@ -22,6 +22,14 @@ def raw_to_array(raw):
     return trace
 
 
+def is_trigger_ready(scope):
+    response = request_response(
+        scope,
+        "vbs? 'return=app.Acquisition.IsTriggerReady'")
+    ready = response.decode().strip().split(" ")[-1].lower()
+    return ready == "-1" or ready == "true"
+
+
 def savetrace(last, destdir):
     # this function allows "interleaved" saving of the old trace
     # while the scope is "Processing...", which is especially useful
@@ -29,16 +37,11 @@ def savetrace(last, destdir):
     if last:
         prefix = os.path.join(destdir, last["prefix"])
         fullpath = f"{prefix}.mat"
-        basename = os.path.basename(fullpath)
-        starttime = time.time()
         scipy.io.savemat(fullpath, last)
-        stoptime = time.time()
-        delta = stoptime - starttime
-        print(f"saved '{basename}' in {delta:.2f} s")
 
 
 def request_response(scope, request):
-    if type(request) == str:
+    if isinstance(request, str):
         request = request.encode()
     scope.send(request)
     return scope.receive()
@@ -65,38 +68,71 @@ def main():
     args = parser.parse_args()
 
     # for some reason, the constructor does not initialize the timeout properly
-    timeout = 60.0
+    timeout = 5.0
     scope = Client(args.ip, timeout=timeout)
     scope.timeout = timeout
 
     print(request_response(scope, "*IDN?"))
+    scope.send(b"comm_format def9,word,bin")
+    scope.send(b"comm_order hi")
 
     last = None
 
-    for tracenum in range(args.numtraces):
-        scope.send(b"TRMD SINGLE;WAIT")
-        time.sleep(0.05)
+    tracenum = -1
+    while tracenum < (args.numtraces-1):
+        ts_0_start = time.time()
+        # send trigger
+        scope.send(b"TRMD SINGLE")
+        notready = 0
+        while not is_trigger_ready(scope):
+            time.sleep(0.1)
+            notready += 1
+            if notready >= 3:
+                break
+        if notready >= 3:
+            print("trigger does not get ready")
+            continue
+        ts_1_trigger_ready = time.time()
+        scope.send(f"WAIT {int(timeout)-1}".encode())
         response = subprocess.check_output([args.dutcomm])
         response = bytes.fromhex(response.decode().split()[0])
-        print(f"{tracenum=} data={response.hex()}")
-        if args.nocapture:
-            break
+        ts_2_dut_comm = time.time()
         savetrace(last, args.destdir)
-        starttime = time.time()
-        try:
-            trace = request_response(scope, "C1:WF? DAT1")
-        except TimeoutError:
-            print("fixme: timeout")
-            raise
-        stoptime = time.time()
-        delta = stoptime - starttime
+        request_response(scope, "*OPC?")   # wait for "Processing..." to finish
+        ts_3_opc = time.time()
+        trigger_state = request_response(  # ... and then see if triggered
+            scope,
+            "vbs? 'return=app.Acquisition.TriggerMode'")
+        trigger_state = trigger_state.decode().strip().split(" ")[1]
+        if trigger_state != "Stopped":
+            print(f"Trigger state is {trigger_state} instead of Stopped."
+                  " Discarding trace.")
+            continue
+        tracenum += 1
+        if args.nocapture:
+            print(f"{tracenum=} data={response.hex()}")
+            continue
+        ts_4_transfer_start = time.time()
+        trace = request_response(scope, "C1:WF? DAT1")
+        ts_5_transfer_end = time.time()
+        delta_total = (ts_5_transfer_end - ts_0_start)*1000
+        delta_trigger = (ts_1_trigger_ready - ts_0_start)*1000
+        delta_dutcomm = (ts_2_dut_comm - ts_1_trigger_ready)*1000
+        delta_processing = (ts_3_opc - ts_2_dut_comm)*1000
+        delta_xfer = (ts_5_transfer_end - ts_4_transfer_start)*1000
         xferlen = len(trace)
-        print(f"transferred {xferlen} bytes in {delta} s"
-              f" @ {(xferlen/(1024*1024*delta)):.1f} MiB/s")
+        print(f"captured trace num={tracenum}"
+              f" in {delta_total:.0f} ms"
+              f" (trg notready: {notready}/{delta_trigger:.0f} ms"
+              f" / dut comm: {delta_dutcomm:.0f} ms"
+              f" / processing: {delta_processing:.0f} ms"
+              f" / xfer: {delta_xfer:.0f} ms"
+              f" @ {(xferlen/(1024*1024*delta_xfer)):.1f} MiB/s)")
         trace = raw_to_array(trace)
         last = {"prefix": f"trace_{tracenum:05d}", "trace": trace,
                 "data": np.array([i for i in response], dtype=np.uint8)}
-    savetrace(last, args.destdir)
+    if not args.nocapture:
+        savetrace(last, args.destdir)
 
 
 if __name__ == "__main__":
