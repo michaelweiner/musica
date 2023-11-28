@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+
+# Correlation Power Analysis implementation
+# 2018-2022 Michael Weiner, m.weiner@tum.de
+
+import numpy
+import argparse
+import fastdtw
+import time
+import concurrent.futures
+
+
+def alignTrace(tracedata):
+    i, ref, other = tracedata
+    time1 = time.time()
+    distance, path = fastdtw.fastdtw(ref, other, radius=40)
+    time2 = time.time()
+    print(f"{i} {time2-time1}sec")
+    average_pool = list()
+    last_refpos = -1
+    out = numpy.zeros(ref.shape)
+    tracelen, *_ = ref.shape
+    last_average = -1
+    for refpos, otherpos in path:
+        if refpos != last_refpos and last_refpos >= 0:
+            # fill "spaces" between last and current refpos with last average
+            value = numpy.mean(average_pool)
+            average_pool.clear()
+            for pos in range(last_refpos, refpos):
+                out[pos] = value
+                last_average = value
+        average_pool.append(other[otherpos])
+        last_refpos = refpos
+    for pos in range(last_refpos, tracelen):
+        out[pos] = last_average
+    return i, out
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Aligns CPA/DPA traces using FastDTW")
+    parser.add_argument("intraces")
+    parser.add_argument("outtraces")
+    args = parser.parse_args()
+
+    aTraces = numpy.load(args.intraces)
+    iNumTraces, iNumSamples = aTraces.shape
+    with concurrent.futures.ProcessPoolExecutor(6) as executor:
+        generator = (
+            (i, aTraces[0, :], aTraces[i, :]) for i in range(1, iNumTraces)
+        )
+        for pos, result in executor.map(alignTrace, generator):
+            aTraces[pos, :] = result
+    numpy.save(args.outtraces, aTraces)
+
+
+if __name__ == "__main__":
+    main()

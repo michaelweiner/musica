@@ -13,6 +13,13 @@ Tools
 ### `cpa_aes`
 Schoolbook implementation of Correlation Power Analysis on the Advanced Encryption Standard.
 
+### `align_fastdtw` / `align_fastdtw_parallel`
+Aligns all traces in a numpy array with the first trace using the [FastDTW](https://pypi.org/project/fastdtw/) package.
+The `align_fastdtw_parallel` uses several processes to speed up computations.
+Note that the FastDTW python package comes with both a Python and a C implementation.
+The latter is A LOT faster, but is only installed if all build dependencies are met
+when you `pip install` the package.
+
 ### `drag_curves`
 Allows dragging a curve segment over a larger curve to inspect visually how well they align.
 

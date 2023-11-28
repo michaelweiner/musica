@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+
+# Correlation Power Analysis implementation
+# 2018-2023 Michael Weiner, m.weiner@tum.de
+
+import numpy
+import argparse
+import fastdtw
+import time
+
+
+def alignTrace(ref, other):
+    time1 = time.time()
+    distance, path = fastdtw.fastdtw(ref, other, radius=40)
+    time2 = time.time()
+    print(time2-time1)
+    average_pool = list()
+    last_refpos = -1
+    out = numpy.zeros(ref.shape)
+    for refpos, otherpos in path:
+        if refpos != last_refpos and last_refpos >= 0:
+            # fill "spaces" between last and current refpos with last average
+            value = numpy.mean(average_pool)
+            average_pool.clear()
+            for pos in range(last_refpos, refpos):
+                out[pos] = value
+        average_pool.append(other[otherpos])
+        last_refpos = refpos
+    return out
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Aligns CPA/DPA traces using FastDTW")
+    parser.add_argument("intraces")
+    parser.add_argument("outtraces")
+    args = parser.parse_args()
+
+    aTraces = numpy.load(args.intraces)
+    iNumTraces, iNumSamples = aTraces.shape
+    for i in range(1, iNumTraces):
+        print(i)
+        aTraces[i, :] = alignTrace(aTraces[0, :], aTraces[i, :])
+    numpy.save(args.outtraces, aTraces)
+
+
+if __name__ == "__main__":
+    main()
