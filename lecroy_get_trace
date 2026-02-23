@@ -55,6 +55,8 @@ def main():
                         help="number of traces to capture")
     parser.add_argument("-i", "--ip", default="169.254.255.244",
                         help="IP address of scope")
+    parser.add_argument("-c", "--channel", default="C1",
+                        help="Oscilloscope channel")
     parser.add_argument("-d", "--destdir", default=".",
                         help="destination directory for traces")
     parser.add_argument("-o", "--nocapture", action="store_true",
@@ -79,6 +81,7 @@ def main():
     last = None
 
     tracenum = -1
+    request_data_command = f"{args.channel}:WF? DAT1"
     while tracenum < (args.numtraces-1):
         ts_0_start = time.time()
         # send trigger
@@ -113,7 +116,7 @@ def main():
             print(f"{tracenum=} data={response.hex()}")
             continue
         ts_4_transfer_start = time.time()
-        trace = request_response(scope, "C1:WF? DAT1")
+        trace = request_response(scope, request_data_command)
         ts_5_transfer_end = time.time()
         delta_total = (ts_5_transfer_end - ts_0_start)*1000
         delta_trigger = (ts_1_trigger_ready - ts_0_start)*1000
