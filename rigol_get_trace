@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+
+import time
+import numpy as np
+import socket
+import subprocess
+import os.path
+import scipy.io
+import argparse
+
+
+def raw_to_array(raw):
+    start = raw.find(b"#")
+    lenlen = int(raw[start+1:start+2])
+    datalen = int(raw[start+2:start+lenlen+2])
+    trace = raw[start+lenlen+2:start+lenlen+datalen+2]
+    trace = np.frombuffer(trace, dtype="<u2")
+    return trace
+
+
+def is_trigger_ready(scope):
+    response = request_response(
+        scope,
+        ":TRIG:STAT?")
+    return response == "WAIT"
+
+
+def savetrace(trace, destdir):
+    # this function allows "interleaved" saving of the old trace
+    # while the scope is "Processing...", which is especially useful
+    # for very large traces.
+    if trace:
+        prefix = os.path.join(destdir, trace["prefix"])
+        fullpath = f"{prefix}.mat"
+        scipy.io.savemat(fullpath, trace)
+
+
+def read_until_newline(o):
+    ba = bytearray()
+    while True:
+        b = o.recv(1)
+        if b == b'\n':
+            return ba.decode()
+        else:
+            ba += b
+
+
+def read_fixed_length(o, length):
+    ba = bytearray()
+    while len(ba) < length:
+        ba += o.recv(length-len(ba))
+    return ba
+
+
+def read_encoded_length(o):
+    data = read_fixed_length(o, 2)
+    assert data[0:1] == b'#'
+    len_len = int(data[1:2].decode())
+    data += read_fixed_length(o, len_len)
+    len_data = int(data[2:2+len_len].decode())
+    data += read_fixed_length(o, len_data+1)
+    if not data[-1:] == b'\n':
+        raise ValueError("received faulty data from scope")
+    return data
+
+
+def request_response(scope, request, reader=read_until_newline):
+    if isinstance(request, str):
+        request = request.encode()
+    if not request.endswith(b"\n"):
+        request += b"\n"
+    scope.send(request)
+    return reader(scope)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Acquires traces from Rigol DHO8xx/9xx scope"
+                    "and talks to DUT over UART")
+    parser.add_argument("-n", "--numtraces", type=int, default=1,
+                        help="number of traces to capture")
+    parser.add_argument("-c", "--channel", default="CHAN1",
+                        help="oscilloscope channel from which to get trace")
+    parser.add_argument("-i", "--ip", default="169.254.255.244",
+                        help="IP address of scope")
+    parser.add_argument("-d", "--destdir", default=".",
+                        help="destination directory for traces")
+    parser.add_argument("-o", "--nocapture", action="store_true",
+                        help="do not capture traces")
+    parser.add_argument("dutcomm",
+                        help="command line tool that talks to the DUT."
+                        " Tool will be called witout arguments"
+                        " and must print nothing but a one-line hex string"
+                        " to stdout that will be stored in the trace file"
+                        " for further processing (e.g. plaintext/ciphertext)")
+    args = parser.parse_args()
+
+    scope = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    scope.connect((args.ip, 5555))
+
+    print(request_response(scope, "*IDN?"))
+    scope.send(b":WAV:FORM WORD\n")
+    scope.send(b":WAV:MODE MAX\n")
+    scope.send(f":WAV:SOUR {args.channel}\n".encode())
+
+    tracenum = -1
+    while tracenum < (args.numtraces-1):
+        ts_0_start = time.time()
+        # send trigger
+        scope.send(b":SING\n")
+        notready = 0
+        while not "WAIT" == (trigger_state :=
+                             request_response(scope, ":TRIG:STAT?")):
+            time.sleep(0.1)
+            notready += 1
+            if notready >= 3:
+                break
+        if notready >= 3:
+            print("trigger does not get ready")
+            continue
+        ts_1_trigger_ready = time.time()
+        response = subprocess.check_output([args.dutcomm])
+        response = bytes.fromhex(response.decode().split()[0])
+        ts_2_dut_comm = time.time()
+        notready = 0
+        while not (trigger_state :=
+                   request_response(scope, ":TRIG:STAT?")) == "STOP":
+            time.sleep(0.1)
+            notready += 1
+            if notready >= 3:
+                break
+        if notready >= 3:
+            print("trigger does not get ready")
+            print(f"Trigger state is {trigger_state} instead of Stopped."
+                  " Discarding trace.")
+            continue
+        ts_3_opc = time.time()
+        tracenum += 1
+        if args.nocapture:
+            print(f"{tracenum=} data={response.hex()}")
+            continue
+        time.sleep(0.2)
+        ts_4_transfer_start = time.time()
+        try:
+            trace = request_response(scope, ":WAV:DATA?", read_encoded_length)
+        except ValueError:
+            tracenum -= 1
+            print("Received faulty data from scope, skipping")
+            continue
+        ts_5_transfer_end = time.time()
+        delta_total = (ts_5_transfer_end - ts_0_start)*1000
+        delta_trigger = (ts_1_trigger_ready - ts_0_start)*1000
+        delta_dutcomm = (ts_2_dut_comm - ts_1_trigger_ready)*1000
+        delta_processing = (ts_3_opc - ts_2_dut_comm)*1000
+        delta_xfer = (ts_5_transfer_end - ts_4_transfer_start)*1000
+        xferlen = len(trace)
+        print(f"captured trace num={tracenum}"
+              f" in {delta_total:.0f} ms"
+              f" (trg notready: {notready}/{delta_trigger:.0f} ms"
+              f" / dut comm: {delta_dutcomm:.0f} ms"
+              f" / processing: {delta_processing:.0f} ms"
+              f" / xfer: {delta_xfer:.0f} ms"
+              f" @ {(1000*xferlen/(1024*1024*delta_xfer)):.1f} MiB/s)")
+        raw_trace = raw_to_array(trace)
+        trace_with_metadata = {"prefix": f"trace_{tracenum:05d}",
+                               "trace": raw_trace,
+                               "data": np.array([i for i in response],
+                                                dtype=np.uint8)}
+        if not args.nocapture:
+            savetrace(trace_with_metadata, args.destdir)
+
+
+if __name__ == "__main__":
+    main()
