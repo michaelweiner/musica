@@ -1,0 +1,4 @@
+pyqtgraph
+scipy
+fastdtw>=0.3.4
+pyvicp
